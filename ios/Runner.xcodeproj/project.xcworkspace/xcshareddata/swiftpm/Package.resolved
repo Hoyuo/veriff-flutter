@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "veriff-ios-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Veriff/veriff-ios-spm.git",
+      "state" : {
+        "revision" : "5d2910ad5a37d89424982ea38ecf733cf167ff79",
+        "version" : "10.2.0"
+      }
+    }
+  ],
+  "version" : 2
+}

@@ -1,0 +1,16 @@
+{
+  "name": "veriff-example-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Veriff Flutter 예제용 로컬 테스트 백엔드 (세션 생성 + 웹훅 수신)",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
