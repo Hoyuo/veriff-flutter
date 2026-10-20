@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:veriff_flutter/veriff_flutter.dart';
 
+import 'submission_progress.dart';
 import 'verification_api.dart';
 
 void main() {
@@ -73,6 +74,18 @@ class _VerificationPageState extends State<VerificationPage> {
 
   bool _isBusy = false;
   String? _sessionId;
+  // 서버에서 받은 세션. 입력란이 이 URL과 다르면(직접 붙여넣기) 세션 ID를 모르는 것으로 본다.
+  String? _createdSessionUrl;
+  String? _createdSessionId;
+
+  // 마지막 SDK 실행 결과. 제출 진행 상황 카드의 '촬영·제출' 단계에 쓴다.
+  SdkOutcome? _sdkOutcome;
+  Error? _sdkError;
+  DateTime? _sdkStartedAt;
+
+  // 세션 ID를 모를 때 서버 updatedAt(서버 시계)과 SDK 시작 시각(기기 시계)을 비교하므로
+  // 두 시계의 오차를 이만큼 허용한다.
+  static const Duration _clockSkewMargin = Duration(minutes: 1);
   String? _resultMessage;
   bool? _resultSuccess;
 
@@ -81,7 +94,6 @@ class _VerificationPageState extends State<VerificationPage> {
   bool _isLoadingStatus = false;
   Timer? _pollTimer;
   DateTime? _pollDeadline;
-  DateTime? _pollStartedAt;
   // 자동 조회 대상 세션. 이전 세션의 최종 결과를 보고 조회를 멈추지 않기 위해 쓴다.
   String? _pollSessionId;
   // 상태 조회 요청 번호. 회원·서버가 바뀌거나 응답 순서가 뒤바뀌어도 최신 요청 결과만 반영한다.
@@ -154,14 +166,38 @@ class _VerificationPageState extends State<VerificationPage> {
     }
   }
 
+  /// 지금 진행 중인 세션에 대한 서버 상태. 이전 세션의 상태라면 null.
+  VerificationState? get _currentSessionServerState {
+    final status = _status;
+    if (status == null) return null;
+    if (_sessionId != null) {
+      return status.sessionId == _sessionId ? status.state : null;
+    }
+    // 세션 ID를 모르면 SDK 시작 이후 갱신된 상태만 이 세션의 것으로 본다.
+    // (submitted 이벤트는 SDK가 끝나기 전에 오므로 종료 시각이 아니라 시작 시각과 비교한다.)
+    return _isUpdatedSinceSdkStart(status) ? status.state : null;
+  }
+
+  bool _isUpdatedSinceSdkStart(VerificationStatus status) {
+    final startedAt = _sdkStartedAt;
+    final updatedAt = status.updatedAt;
+    if (startedAt == null || updatedAt == null) return false;
+    return updatedAt.isAfter(startedAt.subtract(_clockSkewMargin));
+  }
+
+  void _resetSubmission() {
+    _sdkOutcome = null;
+    _sdkError = null;
+    _sdkStartedAt = null;
+  }
+
   /// 자동 조회 중인 세션의 최종 결과인지.
   /// 웹훅이 오기 전에는 이전 세션(예: 지난 풀 인증 승인)이 최신으로 보일 수 있다.
   bool _isPolledSessionFinal(VerificationStatus status) {
     if (!status.state.isFinal) return false;
     if (_pollSessionId != null) return status.sessionId == _pollSessionId;
-    // 세션 URL을 직접 붙여넣어 세션 ID를 모르면, 조회 시작 이후 갱신된 결과만 인정한다.
-    final updatedAt = status.updatedAt;
-    return updatedAt != null && updatedAt.isAfter(_pollStartedAt!);
+    // 세션 URL을 직접 붙여넣어 세션 ID를 모르면, SDK 시작 이후 갱신된 결과만 인정한다.
+    return _isUpdatedSinceSdkStart(status);
   }
 
   /// 제출 직후부터 최종 결과가 나올 때까지 주기적으로 상태를 조회한다.
@@ -169,8 +205,7 @@ class _VerificationPageState extends State<VerificationPage> {
     _stopPolling();
     if (!mounted) return;
     _pollSessionId = _sessionId;
-    _pollStartedAt = DateTime.now();
-    _pollDeadline = _pollStartedAt!.add(_pollTimeout);
+    _pollDeadline = DateTime.now().add(_pollTimeout);
     _pollTimer = Timer.periodic(_pollInterval, (_) {
       if (DateTime.now().isAfter(_pollDeadline!)) {
         _stopPolling();
@@ -199,10 +234,15 @@ class _VerificationPageState extends State<VerificationPage> {
     try {
       final session = await create();
       if (!mounted) return;
+      _stopPolling();
       setState(() {
         _sessionId = session.sessionId;
+        _createdSessionUrl = session.sessionUrl;
+        _createdSessionId = session.sessionId;
         _sessionUrlController.text = session.sessionUrl;
+        _resetSubmission();
       });
+      _refreshStatus();
       _showResult('세션이 생성되었습니다.\nID: $_sessionId', success: true);
     } on ApiException catch (e) {
       _showResult(e.message, success: false);
@@ -238,6 +278,7 @@ class _VerificationPageState extends State<VerificationPage> {
     setState(() {
       _isBusy = true;
       _resultMessage = null;
+      _sdkStartedAt = DateTime.now();
     });
 
     try {
@@ -262,23 +303,45 @@ class _VerificationPageState extends State<VerificationPage> {
           languageLocale: _languageCode,
         ),
       );
-      switch (result.status) {
-        case Status.done:
-          _showResult(
-            '인증을 제출했습니다.\n심사 결과를 자동으로 확인합니다 (최대 3분).',
-            success: true,
-          );
-          _startPolling();
-        case Status.canceled:
-          _showResult('사용자가 인증을 취소했습니다.', success: false);
-        case Status.error:
-          _showResult('오류가 발생했습니다: ${result.error}', success: false);
+      if (!mounted) return;
+      // 결과는 제출 진행 상황 카드에 단계별로 표시한다.
+      setState(() {
+        _sdkOutcome = switch (result.status) {
+          Status.done => SdkOutcome.done,
+          Status.canceled => SdkOutcome.canceled,
+          Status.error => SdkOutcome.error,
+        };
+        _sdkError = result.error;
+      });
+      if (result.status == Status.done) {
+        _startPolling();
+      } else {
+        _refreshStatus();
       }
     } on PlatformException catch (e) {
+      if (mounted) {
+        setState(() {
+          _sdkOutcome = SdkOutcome.error;
+          _sdkError = null;
+        });
+      }
       _showResult('SDK 실행 실패: ${e.message}', success: false);
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
+  }
+
+  /// 세션 URL이 바뀌면 이전 세션의 진행 상황은 맞지 않으므로 초기화한다.
+  /// 서버에서 받은 URL로 되돌리면 그 세션 ID를 다시 쓴다.
+  void _onSessionUrlChanged(String value) {
+    final sessionId =
+        value.trim() == _createdSessionUrl ? _createdSessionId : null;
+    if (sessionId == _sessionId && _sdkOutcome == null && !_isPolling) return;
+    _stopPolling();
+    setState(() {
+      _sessionId = sessionId;
+      _resetSubmission();
+    });
   }
 
   void _onUserChanged(String? value) {
@@ -288,7 +351,10 @@ class _VerificationPageState extends State<VerificationPage> {
     setState(() {
       _selectedUserId = value;
       _sessionId = null;
+      _createdSessionUrl = null;
+      _createdSessionId = null;
       _sessionUrlController.clear();
+      _resetSubmission();
       _resultMessage = null;
       _status = null;
       _statusError = null;
@@ -386,6 +452,7 @@ class _VerificationPageState extends State<VerificationPage> {
                 ),
                 keyboardType: TextInputType.url,
                 autocorrect: false,
+                onChanged: _onSessionUrlChanged,
               ),
               const SizedBox(height: 24),
               Text('2단계 · 인증 진행', style: textTheme.titleMedium),
@@ -425,6 +492,16 @@ class _VerificationPageState extends State<VerificationPage> {
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
               ),
+              if (_sessionId != null || _sdkOutcome != null) ...[
+                const SizedBox(height: 12),
+                SubmissionProgress(
+                  sessionCreated: _sessionId != null,
+                  sdkOutcome: _sdkOutcome,
+                  sdkError: _sdkError,
+                  serverState: _currentSessionServerState,
+                  isPolling: _isPolling,
+                ),
+              ],
               const SizedBox(height: 24),
               if (_resultMessage != null)
                 Card(
