@@ -1,12 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- usesCleartextTraffic: 로컬 테스트 서버(http://10.0.2.2)에 접속하기 위한 설정.
-         실서비스에서는 제거하고 HTTPS만 사용해야 한다. -->
     <application
-        android:label="veriff_example"
+        android:label="RN Partner KYC"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
             android:exported="true"
