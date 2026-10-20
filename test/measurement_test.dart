@@ -212,8 +212,9 @@ void main() {
 
     expect(find.text('측정 기록 (1)'), findsOneWidget);
     expect(find.text('user-test-001 · 풀 인증 · 승인'), findsOneWidget);
-    expect(find.textContaining('SDK 2분 13초'), findsOneWidget);
-    expect(find.textContaining('결정 +3분 47초'), findsOneWidget);
+    expect(find.textContaining('촬영·제출 2분 13초'), findsOneWidget);
+    expect(find.textContaining('접수까지 -'), findsOneWidget);
+    expect(find.textContaining('심사 3분 47초'), findsOneWidget);
 
     await tester.tap(find.byTooltip('표로 복사'));
     await tester.pump();

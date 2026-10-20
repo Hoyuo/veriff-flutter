@@ -107,9 +107,6 @@ class _MeasurementRow extends StatelessWidget {
   final Measurement measurement;
   final TextStyle? mutedStyle;
 
-  static String _elapsed(Duration? d) =>
-      d == null ? '-' : '+${formatDuration(d)}';
-
   @override
   Widget build(BuildContext context) {
     final m = measurement;
@@ -132,9 +129,9 @@ class _MeasurementRow extends StatelessWidget {
           ),
           Text(
             '${local.month}/${local.day} ${two(local.hour)}:${two(local.minute)}'
-            '  ·  SDK ${formatDuration(m.sdkDuration)}'
-            '  ·  시작→접수 ${_elapsed(m.toReceipt)}'
-            '  ·  결정 ${_elapsed(m.toDecision)}',
+            '  ·  촬영·제출 ${formatDuration(m.sdkDuration)}'
+            '  ·  접수까지 ${formatDuration(m.toReceipt)}'
+            '  ·  심사 ${formatDuration(m.toDecision)}',
             style: mutedStyle,
           ),
         ],

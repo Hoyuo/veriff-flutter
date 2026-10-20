@@ -168,7 +168,7 @@ String measurementsToMarkdown(List<Measurement> measurements) {
   }
 
   final buffer = StringBuffer()
-    ..writeln('| 시작 | 회원 | 종류 | SDK | SDK 진행 | 시작→접수 | 접수→결정 | 결과 |')
+    ..writeln('| 시작 | 회원 | 종류 | SDK 결과 | 촬영·제출 | 접수까지 | 심사 | 결과 |')
     ..writeln('|---|---|---|---|---|---|---|---|');
   for (final m in measurements) {
     final cells = [
