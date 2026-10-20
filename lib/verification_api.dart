@@ -24,6 +24,15 @@ enum VerificationState {
   static VerificationState parse(String? value) => VerificationState.values
       .firstWhere((s) => s.wireName == value, orElse: () => unknown);
 
+  /// Veriff가 제출을 접수한 이후의 상태인지 (submitted 이벤트 이후).
+  bool get isReceived => const {
+        submitted,
+        review,
+        approved,
+        declined,
+        resubmissionRequested,
+      }.contains(this);
+
   /// 더 이상 상태가 바뀌지 않는 최종 결과인지. 자동 조회(polling) 종료 조건으로 쓴다.
   bool get isFinal => const {
         approved,

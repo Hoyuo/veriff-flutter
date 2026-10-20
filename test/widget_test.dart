@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:veriff_example/main.dart';
 import 'package:veriff_example/verification_api.dart';
 
@@ -24,6 +25,8 @@ Finder _reauthButton() =>
     find.widgetWithText(OutlinedButton, '재인증 세션 생성 (셀피만)');
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   testWidgets('Verification page renders', (WidgetTester tester) async {
     await tester.pumpWidget(VeriffExampleApp(api: _fakeApi({})));
     await tester.pumpAndSettle();
@@ -31,6 +34,7 @@ void main() {
     expect(find.text('Rocket Now Partner 인증'), findsOneWidget);
     expect(find.text('인증 시작'), findsOneWidget);
     expect(find.text('日本語'), findsOneWidget);
+    expect(find.text('측정 기록 (0)'), findsOneWidget);
   });
 
   testWidgets('미등록 회원은 재인증 버튼이 비활성화된다', (WidgetTester tester) async {

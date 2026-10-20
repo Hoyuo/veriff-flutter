@@ -44,14 +44,6 @@ class SubmissionProgress extends StatelessWidget {
   final VerificationState? serverState;
   final bool isPolling;
 
-  static const _received = {
-    VerificationState.submitted,
-    VerificationState.review,
-    VerificationState.approved,
-    VerificationState.declined,
-    VerificationState.resubmissionRequested,
-  };
-
   // 제출되지 않은 채 끝난 세션.
   static const _closedWithoutSubmit = {
     VerificationState.expired,
@@ -60,7 +52,7 @@ class SubmissionProgress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final received = _received.contains(serverState);
+    final received = serverState?.isReceived ?? false;
     final closed = _closedWithoutSubmit.contains(serverState);
 
     final sessionStep = sessionCreated || sdkOutcome != null

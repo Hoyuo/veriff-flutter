@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:veriff_flutter/veriff_flutter.dart';
 
+import 'measurement.dart';
+import 'measurement_log_card.dart';
 import 'submission_progress.dart';
 import 'verification_api.dart';
 
@@ -77,6 +79,13 @@ class _VerificationPageState extends State<VerificationPage> {
   // 서버에서 받은 세션. 입력란이 이 URL과 다르면(직접 붙여넣기) 세션 ID를 모르는 것으로 본다.
   String? _createdSessionUrl;
   String? _createdSessionId;
+  String? _createdSessionKind;
+
+  // POC 소요 시간 측정 기록 (최신이 앞). 앱을 다시 켜도 남는다.
+  final MeasurementStore _measurementStore = MeasurementStore();
+  List<Measurement> _measurements = [];
+  // 지금 세션의 측정 기록 ID. 세션 URL을 붙여넣어 세션 ID를 모를 때 상태를 연결하는 데 쓴다.
+  String? _currentMeasurementId;
 
   // 마지막 SDK 실행 결과. 제출 진행 상황 카드의 '촬영·제출' 단계에 쓴다.
   SdkOutcome? _sdkOutcome;
@@ -123,8 +132,24 @@ class _VerificationPageState extends State<VerificationPage> {
   void initState() {
     super.initState();
     // initState 안에서는 setState를 부를 수 없으므로 첫 프레임 이후에 조회한다.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshStatus());
+    // 측정 기록을 먼저 불러와야 첫 조회 결과(예: 앱이 꺼진 사이 나온 결정)가 기록에 반영된다.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final loaded = await _measurementStore.load();
+      if (!mounted) return;
+      final knownIds = {for (final m in _measurements) m.id};
+      setState(() => _measurements = [
+            ..._measurements,
+            ...loaded.where((m) => !knownIds.contains(m.id)),
+          ]);
+      _refreshStatus();
+    });
   }
+
+  /// 서버에서 만든 세션의 종류. 세션 URL을 직접 붙여넣었으면 null.
+  String? get _sessionKind =>
+      _sessionId != null && _sessionId == _createdSessionId
+          ? _createdSessionKind
+          : null;
 
   @override
   void dispose() {
@@ -155,6 +180,7 @@ class _VerificationPageState extends State<VerificationPage> {
         _status = status;
         _statusError = null;
       });
+      _applyStatusToMeasurements(status);
       if (_isPolling && _isPolledSessionFinal(status)) _stopPolling();
     } on ApiException catch (e) {
       if (!mounted || seq != _statusRequestSeq) return;
@@ -166,22 +192,71 @@ class _VerificationPageState extends State<VerificationPage> {
     }
   }
 
+  /// SDK 실행 1회를 측정 기록으로 남긴다.
+  void _recordSdkResult(SdkOutcome outcome) {
+    final startedAt = _sdkStartedAt;
+    if (startedAt == null) return;
+    final measurement = Measurement(
+      id: '${_sessionId ?? 'pasted'}-${startedAt.microsecondsSinceEpoch}',
+      vendorData: _selectedUserId,
+      sessionId: _sessionId,
+      kind: _sessionKind,
+      sdkStartedAt: startedAt,
+      sdkFinishedAt: DateTime.now(),
+      sdkOutcome: outcome,
+    );
+    // 취소·오류 실행은 결과를 기다리지 않으므로, 붙여넣은 세션의 연결 대상은 제출한 실행만 된다.
+    if (outcome == SdkOutcome.done) _currentMeasurementId = measurement.id;
+    _saveMeasurements([measurement, ..._measurements]);
+  }
+
+  /// 조회한 상태를 해당 세션의 측정 기록에 반영한다 (접수·결정 시각).
+  ///
+  /// 같은 세션을 여러 번 제출했으면(예: 재제출 요청 후 다시 제출) 가장 최근 제출에만 반영하고,
+  /// 그 제출을 시작하기 전에 갱신된 상태(지난 제출의 결과)는 반영하지 않는다.
+  void _applyStatusToMeasurements(VerificationStatus status) {
+    final index = _measurements.indexWhere((m) =>
+        m.sdkOutcome == SdkOutcome.done &&
+        m.vendorData == status.vendorData &&
+        (m.sessionId != null
+            ? m.sessionId == status.sessionId
+            : m.id == _currentMeasurementId));
+    if (index < 0) return;
+    final m = _measurements[index];
+    if (!_isUpdatedSince(status, m.sdkStartedAt)) return;
+    final next = m.applyStatus(status);
+    if (identical(next, m)) return;
+    _saveMeasurements([..._measurements]..[index] = next);
+  }
+
+  void _saveMeasurements(List<Measurement> measurements) {
+    final trimmed = measurements.take(MeasurementStore.maxEntries).toList();
+    setState(() => _measurements = trimmed);
+    _measurementStore.save(trimmed);
+  }
+
   /// 지금 진행 중인 세션에 대한 서버 상태. 이전 세션의 상태라면 null.
   VerificationState? get _currentSessionServerState {
     final status = _status;
     if (status == null) return null;
-    if (_sessionId != null) {
-      return status.sessionId == _sessionId ? status.state : null;
-    }
-    // 세션 ID를 모르면 SDK 시작 이후 갱신된 상태만 이 세션의 것으로 본다.
-    // (submitted 이벤트는 SDK가 끝나기 전에 오므로 종료 시각이 아니라 시작 시각과 비교한다.)
+    if (_sessionId != null && status.sessionId != _sessionId) return null;
+    // SDK를 실행하기 전에는 세션의 현재 상태를 그대로 보여준다.
+    if (_sessionId != null && _sdkStartedAt == null) return status.state;
+    // SDK 실행 후에는 그 이후 갱신된 상태만 이번 제출의 것으로 본다.
+    // (같은 세션 재제출 시 지난 결과를 걸러내고, 세션 ID를 모르는 붙여넣기 세션도 구분한다.
+    //  submitted 이벤트는 SDK가 끝나기 전에 오므로 종료 시각이 아니라 시작 시각과 비교한다.)
     return _isUpdatedSinceSdkStart(status) ? status.state : null;
   }
 
   bool _isUpdatedSinceSdkStart(VerificationStatus status) {
     final startedAt = _sdkStartedAt;
+    return startedAt != null && _isUpdatedSince(status, startedAt);
+  }
+
+  /// [startedAt](기기 시계) 이후에 서버가 갱신한 상태인지. 시계 오차를 허용한다.
+  bool _isUpdatedSince(VerificationStatus status, DateTime startedAt) {
     final updatedAt = status.updatedAt;
-    if (startedAt == null || updatedAt == null) return false;
+    if (updatedAt == null) return false;
     return updatedAt.isAfter(startedAt.subtract(_clockSkewMargin));
   }
 
@@ -191,12 +266,14 @@ class _VerificationPageState extends State<VerificationPage> {
     _sdkStartedAt = null;
   }
 
-  /// 자동 조회 중인 세션의 최종 결과인지.
-  /// 웹훅이 오기 전에는 이전 세션(예: 지난 풀 인증 승인)이 최신으로 보일 수 있다.
+  /// 자동 조회 중인 제출의 최종 결과인지.
+  /// 웹훅이 오기 전에는 이전 세션(예: 지난 풀 인증 승인)이나 같은 세션의 지난 제출 결과
+  /// (예: 재제출 요청)가 최신으로 보일 수 있으므로, SDK 시작 이후 갱신된 결과만 인정한다.
   bool _isPolledSessionFinal(VerificationStatus status) {
     if (!status.state.isFinal) return false;
-    if (_pollSessionId != null) return status.sessionId == _pollSessionId;
-    // 세션 URL을 직접 붙여넣어 세션 ID를 모르면, SDK 시작 이후 갱신된 결과만 인정한다.
+    if (_pollSessionId != null && status.sessionId != _pollSessionId) {
+      return false;
+    }
     return _isUpdatedSinceSdkStart(status);
   }
 
@@ -224,7 +301,7 @@ class _VerificationPageState extends State<VerificationPage> {
     if (mounted) setState(() => _pollTimer = null);
   }
 
-  Future<void> _requestSession(
+  Future<void> _requestSession(String kind,
       Future<({String sessionId, String sessionUrl})> Function() create) async {
     setState(() {
       _isBusy = true;
@@ -239,6 +316,7 @@ class _VerificationPageState extends State<VerificationPage> {
         _sessionId = session.sessionId;
         _createdSessionUrl = session.sessionUrl;
         _createdSessionId = session.sessionId;
+        _createdSessionKind = kind;
         _sessionUrlController.text = session.sessionUrl;
         _resetSubmission();
       });
@@ -254,7 +332,7 @@ class _VerificationPageState extends State<VerificationPage> {
   /// 풀 인증(신분증 + 셀피) 세션. 승인되면 vendorData 기준으로 얼굴이 등록된다.
   Future<void> _createSessionFromServer() {
     final user = _selectedUser;
-    return _requestSession(() => _api.createVerification(
+    return _requestSession('verification', () => _api.createVerification(
           vendorData: user.id,
           firstName: user.firstName,
           lastName: user.lastName,
@@ -264,7 +342,8 @@ class _VerificationPageState extends State<VerificationPage> {
   /// 셀피 재인증 세션. 같은 vendorData로 등록된 얼굴과 대조한다.
   /// 서버에 Biometric Authentication 연동이 준비되어 있어야 한다.
   Future<void> _createAuthSessionFromServer() {
-    return _requestSession(() => _api.createAuthentication(_selectedUserId));
+    return _requestSession(
+        'authentication', () => _api.createAuthentication(_selectedUserId));
   }
 
   /// 세션 URL로 Veriff SDK 인증 플로우를 시작한다.
@@ -304,15 +383,17 @@ class _VerificationPageState extends State<VerificationPage> {
         ),
       );
       if (!mounted) return;
+      final outcome = switch (result.status) {
+        Status.done => SdkOutcome.done,
+        Status.canceled => SdkOutcome.canceled,
+        Status.error => SdkOutcome.error,
+      };
       // 결과는 제출 진행 상황 카드에 단계별로 표시한다.
       setState(() {
-        _sdkOutcome = switch (result.status) {
-          Status.done => SdkOutcome.done,
-          Status.canceled => SdkOutcome.canceled,
-          Status.error => SdkOutcome.error,
-        };
+        _sdkOutcome = outcome;
         _sdkError = result.error;
       });
+      _recordSdkResult(outcome);
       if (result.status == Status.done) {
         _startPolling();
       } else {
@@ -324,6 +405,7 @@ class _VerificationPageState extends State<VerificationPage> {
           _sdkOutcome = SdkOutcome.error;
           _sdkError = null;
         });
+        _recordSdkResult(SdkOutcome.error);
       }
       _showResult('SDK 실행 실패: ${e.message}', success: false);
     } finally {
@@ -353,6 +435,7 @@ class _VerificationPageState extends State<VerificationPage> {
       _sessionId = null;
       _createdSessionUrl = null;
       _createdSessionId = null;
+      _createdSessionKind = null;
       _sessionUrlController.clear();
       _resetSubmission();
       _resultMessage = null;
@@ -531,6 +614,14 @@ class _VerificationPageState extends State<VerificationPage> {
                     ),
                   ),
                 ),
+              const SizedBox(height: 12),
+              MeasurementLogCard(
+                measurements: _measurements,
+                onClear: () {
+                  _currentMeasurementId = null;
+                  _saveMeasurements([]);
+                },
+              ),
             ],
           ),
         ),
